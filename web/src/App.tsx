@@ -368,7 +368,16 @@ function PlayerPool(props: {
               const leader = props.leaderOf.get(player.id)
               const mine = leader?.manager_id === props.userId
               return (
-                <tr key={player.id} className={mine ? 'bg-emerald-500/15 shadow-[inset_3px_0_0_#10b981]' : stripedRow}>
+                <tr
+                  key={player.id}
+                  className={
+                    mine
+                      ? 'bg-emerald-500/15 shadow-[inset_3px_0_0_#10b981]'
+                      : leader
+                        ? 'bg-amber-400/20 shadow-[inset_3px_0_0_#f59e0b]'
+                        : stripedRow
+                  }
+                >
                   <td className="whitespace-nowrap font-medium">
                     <img
                       src={`https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/${player.id}.png&w=96&h=70`}
