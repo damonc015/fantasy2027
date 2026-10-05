@@ -132,6 +132,12 @@ function Draft({ userId }: { userId: string }) {
   const managerName = useMemo(() => new Map(budgets.map((row) => [row.manager_id, row.name])), [budgets])
   const leaderOf = useMemo(() => new Map(leaders.map((bid) => [bid.player_id, bid])), [leaders])
   const me = budgets.find((row) => row.manager_id === userId)
+  const positionsOf = useMemo(() => new Map(players.map((player) => [player.id, player.positions])), [players])
+  // A player eligible at two positions counts toward both.
+  const myPositions = POSITIONS.map((position) => ({
+    position,
+    count: leaders.filter((bid) => bid.manager_id === userId && positionsOf.get(bid.player_id)?.includes(position)).length,
+  }))
 
   async function placeBid({ playerId, amount }: PendingBid) {
     const { error } = await supabase.rpc('place_bid', { p_player_id: playerId, p_amount: amount })
@@ -154,6 +160,13 @@ function Draft({ userId }: { userId: string }) {
           <>
             <span className={pill}><b>{money(me.remaining)}</b> left</span>
             <span className={pill} title="Players you currently lead">Players <b>{me.players_led}{rosterSize && `/${rosterSize}`}</b></span>
+            <span className={`${pill} flex gap-2.5`} title="Players you lead at each position. Dual-position players count for both.">
+              {myPositions.map(({ position, count }) => (
+                <span key={position} className={count === 0 ? 'text-red-600' : ''}>
+                  {position} <b>{count}</b>
+                </span>
+              ))}
+            </span>
             <span className="ml-auto text-sm text-muted">{me.name}</span>
           </>
         )}
