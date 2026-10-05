@@ -38,7 +38,7 @@ All of this lives in `place_bid` in `supabase/migrations/`. It is the only way t
    ESPN_LEAGUE_ID=... ESPN_S2=... SWID=... SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
      .venv/bin/python scripts/import_players.py
    ```
-   `ESPN_S2` and `SWID` are cookies from espn.com, needed for private leagues. Add the same five values as GitHub Actions secrets to run the import daily.
+   `ESPN_S2` and `SWID` are cookies from espn.com, needed for private leagues. Re-run the script whenever you want fresh projections. The GitHub Actions workflow "Import ESPN projections" is manual only: to trigger imports from the Actions tab, add the same five values as repository secrets first.
 5. Run the web app (Node 22.12 or newer):
    ```sh
    cd web && cp .env.example .env.local   # fill in the project URL and anon key
