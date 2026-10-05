@@ -1,15 +1,16 @@
 import type { Session } from '@supabase/supabase-js'
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { type Bid, type Budget, type CurrentBid, type Player, supabase } from './supabase'
+import { type Bid, type Budget, type CurrentBid, type Player, type ScoringRule, supabase } from './supabase'
 
-const TABS = ['draft', 'activity', 'budgets'] as const
+const TABS = ['draft', 'log', 'standings'] as const
+const TAB_LABELS = { draft: 'Draft', log: 'Transaction Log', standings: 'Current Standings' }
 type Tab = (typeof TABS)[number]
 const STATS = ['PTS', 'REB', 'AST', 'STL', 'BLK']
 const POSITIONS = ['PG', 'SG', 'SF', 'PF', 'C']
 const FPTS = 'Proj FPTS/G'
 const TOTAL = 'Proj total'
 const BID = 'High bid'
-const SORTS = [FPTS, TOTAL, ...STATS, BID]
+const SORTS = [TOTAL, FPTS, ...STATS, BID]
 // Supabase Auth needs an email, so usernames map to an address nobody sees.
 // Must match LOGIN_DOMAIN in scripts/add_manager.py.
 const LOGIN_DOMAIN = 'fantasy2027.local'
@@ -86,6 +87,7 @@ function Draft({ userId }: { userId: string }) {
   const [budgets, setBudgets] = useState<Budget[]>([])
   const [closesAt, setClosesAt] = useState<string | null>(null)
   const [rosterSize, setRosterSize] = useState<number | null>(null)
+  const [scoring, setScoring] = useState<ScoringRule[]>([])
   const [message, setMessage] = useState<Message | null>(null)
   const [pending, setPending] = useState<PendingBid | null>(null)
 
@@ -94,7 +96,7 @@ function Draft({ userId }: { userId: string }) {
       supabase.from('current_bids').select('player_id, manager_id, amount'),
       supabase.from('bids').select('*').order('id', { ascending: false }).limit(200),
       supabase.from('manager_budgets').select('*').order('name'),
-      supabase.from('auction').select('closes_at, roster_size').maybeSingle(),
+      supabase.from('auction').select('closes_at, roster_size, scoring').maybeSingle(),
     ])
     const failure = leadersResult.error ?? bidsResult.error ?? budgetsResult.error ?? auctionResult.error
     if (failure) return setMessage({ text: failure.message, error: true })
@@ -103,6 +105,7 @@ function Draft({ userId }: { userId: string }) {
     setBudgets(budgetsResult.data ?? [])
     setClosesAt(auctionResult.data?.closes_at ?? null)
     setRosterSize(auctionResult.data?.roster_size ?? null)
+    setScoring(auctionResult.data?.scoring ?? [])
   }, [])
 
   useEffect(() => {
@@ -129,7 +132,6 @@ function Draft({ userId }: { userId: string }) {
   const managerName = useMemo(() => new Map(budgets.map((row) => [row.manager_id, row.name])), [budgets])
   const leaderOf = useMemo(() => new Map(leaders.map((bid) => [bid.player_id, bid])), [leaders])
   const me = budgets.find((row) => row.manager_id === userId)
-  const myBids = leaders.filter((bid) => bid.manager_id === userId).sort((a, b) => b.amount - a.amount)
 
   async function placeBid({ playerId, amount }: PendingBid) {
     const { error } = await supabase.rpc('place_bid', { p_player_id: playerId, p_amount: amount })
@@ -145,7 +147,8 @@ function Draft({ userId }: { userId: string }) {
   return (
     <div className="mx-auto max-w-7xl p-4">
       <header className="flex flex-wrap items-center gap-2">
-        <h1 className="mr-2 text-xl font-bold">Fantasy 2027 Auction</h1>
+        <h1 className="text-xl font-bold">Fantasy 2027 Auction</h1>
+        <Rules closesAt={closesAt} rosterSize={rosterSize} budget={me?.budget} scoring={scoring} />
         <Countdown closesAt={closesAt} />
         {me && (
           <>
@@ -166,7 +169,7 @@ function Draft({ userId }: { userId: string }) {
               tab === name ? 'bg-accent text-white' : 'text-muted hover:bg-card'
             }`}
           >
-            {name}
+            {TAB_LABELS[name]}
           </a>
         ))}
       </nav>
@@ -192,38 +195,7 @@ function Draft({ userId }: { userId: string }) {
         onConfirm={placeBid}
       />
 
-      {tab === 'activity' && (
-        <section className="mt-3 rounded-lg border border-line bg-card p-3 shadow-sm">
-          <h2 className="text-sm font-semibold">
-            Your players{' '}
-            <span className="font-normal text-muted">
-              {myBids.length}{rosterSize && `/${rosterSize}`} leading, {money(me?.committed ?? 0)} committed
-            </span>
-          </h2>
-          {myBids.length === 0 ? (
-            <p className="mt-2 text-sm text-muted">You are not leading any player yet.</p>
-          ) : (
-            <ul className="mt-2 flex flex-wrap gap-2">
-              {myBids.map((bid) => (
-                <li key={bid.player_id} className="flex items-center gap-2 rounded-md border border-line bg-stripe py-1 pr-3 pl-1 text-sm">
-                  <img
-                    src={`https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/${bid.player_id}.png&w=96&h=70`}
-                    alt=""
-                    loading="lazy"
-                    width={40}
-                    height={29}
-                    onError={(event) => (event.currentTarget.style.visibility = 'hidden')}
-                  />
-                  {playerName.get(bid.player_id)}
-                  <b className="tabular-nums">{money(bid.amount)}</b>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      )}
-
-      {tab === 'activity' && (
+      {tab === 'log' && (
         <Table head={['Time', 'Manager', 'Player', 'Bid']}>
           {bids.map((bid) => (
             <tr key={bid.id} className={stripedRow}>
@@ -236,26 +208,130 @@ function Draft({ userId }: { userId: string }) {
         </Table>
       )}
 
-      {tab === 'budgets' && (
-        <Table head={['Manager', 'Budget', 'Committed', 'Remaining', 'Players', 'Leading']}>
-          {budgets.map((row) => (
-            <tr key={row.manager_id} className={`${stripedRow} align-top`}>
-              <td className="font-medium">{row.name}</td>
-              <td className="tabular-nums">{money(row.budget)}</td>
-              <td className="tabular-nums">{money(row.committed)}</td>
-              <td className="font-semibold tabular-nums">{money(row.remaining)}</td>
-              <td className="tabular-nums">{row.players_led}{rosterSize && `/${rosterSize}`}</td>
-              <td>
-                {leaders
-                  .filter((bid) => bid.manager_id === row.manager_id)
-                  .map((bid) => `${playerName.get(bid.player_id)} (${money(bid.amount)})`)
-                  .join(', ') || <span className="text-muted">None</span>}
-              </td>
-            </tr>
-          ))}
-        </Table>
-      )}
+      {tab === 'standings' &&
+        budgets.map((row) => {
+          const roster = leaders.filter((bid) => bid.manager_id === row.manager_id).sort((a, b) => b.amount - a.amount)
+          return (
+            <section
+              key={row.manager_id}
+              className={`mt-3 rounded-lg border bg-card p-3 shadow-sm ${
+                row.manager_id === userId ? 'border-emerald-500 shadow-[inset_3px_0_0_#10b981]' : 'border-line'
+              }`}
+            >
+              <h2 className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm text-muted">
+                <span className="text-base font-semibold text-ink">{row.name}</span>
+                <span>Players <b className="text-ink tabular-nums">{row.players_led}{rosterSize && `/${rosterSize}`}</b></span>
+                <span>Remaining <b className="text-ink tabular-nums">{money(row.remaining)}</b></span>
+                <span>Committed <b className="text-ink tabular-nums">{money(row.committed)}</b></span>
+                <span>Budget <b className="text-ink tabular-nums">{money(row.budget)}</b></span>
+              </h2>
+              {roster.length === 0 ? (
+                <p className="mt-2 text-sm text-muted">Not leading any player yet.</p>
+              ) : (
+                <ul className="mt-2 flex flex-wrap gap-2">
+                  {roster.map((bid) => (
+                    <li key={bid.player_id} className="flex items-center gap-2 rounded-md border border-line bg-stripe py-1 pr-3 pl-1 text-sm">
+                      <img
+                        src={`https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/${bid.player_id}.png&w=96&h=70`}
+                        alt=""
+                        loading="lazy"
+                        width={40}
+                        height={29}
+                        onError={(event) => (event.currentTarget.style.visibility = 'hidden')}
+                      />
+                      {playerName.get(bid.player_id)}
+                      <b className="tabular-nums">{money(bid.amount)}</b>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )
+        })}
     </div>
+  )
+}
+
+function Rules(props: {
+  closesAt: string | null
+  rosterSize: number | null
+  budget: number | undefined
+  scoring: ScoringRule[]
+}) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  const spots = props.rosterSize ?? 13
+  const swatch = 'mr-2 inline-block size-3 rounded-sm align-middle'
+
+  return (
+    <>
+      <button type="button" onClick={() => dialog.current?.showModal()} className={`${pill} mr-2 font-medium hover:bg-accent/10`}>
+        ⓘ Rules
+      </button>
+      <dialog
+        ref={dialog}
+        aria-labelledby="rules-title"
+        className="m-auto max-h-[calc(100vh-2rem)] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-xl border border-line bg-card p-5 text-ink shadow-xl backdrop:bg-black/50 [&_h3]:mt-4 [&_h3]:font-semibold [&_li]:mt-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:text-sm"
+      >
+        <h2 id="rules-title" className="text-lg font-bold">How the auction works</h2>
+
+        <h3>Bidding</h3>
+        <ul>
+          <li>Every manager starts with {props.budget ? money(props.budget) : 'the same budget'}.</li>
+          <li>Bid on any player. A bid must be at least $1 higher than the current high bid.</li>
+          <li>A bid is final. You cannot revoke, lower, or delete it.</li>
+          <li>
+            The auction closes{' '}
+            {props.closesAt ? <b>{new Date(props.closesAt).toLocaleString([], { dateStyle: 'full', timeStyle: 'short' })}</b> : 'at the deadline'}.
+            Whoever leads a player at that moment wins that player at that price.
+          </li>
+        </ul>
+
+        <h3>Being outbid</h3>
+        <ul>
+          <li>If another manager bids higher on a player you lead, you lose that player.</li>
+          <li>The money from your bid returns to your balance right away.</li>
+          <li>You get a Discord ping. You can bid on that player again or spend the money elsewhere.</li>
+        </ul>
+
+        <h3>Row colors</h3>
+        <ul className="list-none! pl-0!">
+          <li><span className={`${swatch} bg-emerald-500`} />Green: you lead this player.</li>
+          <li><span className={`${swatch} bg-amber-400`} />Yellow: another manager leads this player.</li>
+          <li><span className={`${swatch} border border-line`} />No color: no bids yet.</li>
+        </ul>
+
+        <h3>You need {spots} players</h3>
+        <ul>
+          <li>Your roster has {spots} spots. Lead {spots} players before the auction closes.</li>
+          <li>You cannot lead more than {spots} players at once.</li>
+          <li>$1 stays reserved for each empty spot, so your max bid can be lower than your balance.</li>
+          <li>The Players counter in the header shows how many you lead now.</li>
+        </ul>
+
+        <h3>Scoring</h3>
+        {props.scoring.length === 0 ? (
+          <p className="text-sm text-muted">Scoring is not loaded yet.</p>
+        ) : (
+          <table className="mt-1 w-full text-sm [&_td]:py-0.5">
+            <tbody>
+              {props.scoring.map((rule) => (
+                <tr key={rule.stat} className="border-t border-line">
+                  <td>{rule.label}</td>
+                  <td className={`${numeric} font-semibold ${rule.points < 0 ? 'text-red-600' : ''}`}>
+                    {rule.points > 0 && '+'}{rule.points}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <p className="mt-2 text-xs text-muted">Projected points in the table use this scoring, from the ESPN league.</p>
+
+        <form method="dialog" className="mt-4 flex justify-end">
+          <button className={button}>Got it</button>
+        </form>
+      </dialog>
+    </>
   )
 }
 
@@ -297,7 +373,7 @@ function PlayerPool(props: {
   const [search, setSearch] = useState('')
   const [position, setPosition] = useState('')
   const [team, setTeam] = useState('')
-  const [sort, setSort] = useState(FPTS)
+  const [sort, setSort] = useState(TOTAL)
 
   const teams = useMemo(
     () => [...new Set(props.players.map((player) => player.team).filter((name): name is string => !!name))].sort(),
@@ -400,8 +476,8 @@ function PlayerPool(props: {
                     {player.team}
                   </td>
                   <td className="text-muted">{player.positions.join('/')}</td>
-                  <td className={`${numeric} font-semibold`}>{player.projections.fantasy_avg.toFixed(1)}</td>
-                  <td className={numeric}>{Math.round(player.projections.fantasy_total)}</td>
+                  <td className={`${numeric} font-bold`}>{Math.round(player.projections.fantasy_total).toLocaleString()}</td>
+                  <td className={numeric}>{player.projections.fantasy_avg.toFixed(1)}</td>
                   {STATS.map((stat) => (
                     <td key={stat} className={numeric}>{player.projections.avg?.[stat]?.toFixed(1) ?? '-'}</td>
                   ))}

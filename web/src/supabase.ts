@@ -13,6 +13,7 @@ export type Player = {
   injury_status: string | null
   projections: { fantasy_avg: number; fantasy_total: number; avg: Record<string, number> }
 }
+export type ScoringRule = { stat: string; label: string; points: number }
 export type CurrentBid = { player_id: number; manager_id: string; amount: number }
 export type Bid = CurrentBid & { id: number; created_at: string }
 export type Budget = {

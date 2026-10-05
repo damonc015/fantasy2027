@@ -4,6 +4,27 @@ import os
 
 SEASON = 2027
 POSITIONS = {"PG", "SG", "SF", "PF", "C"}
+STAT_LABELS = {
+    "PTS": "Points",
+    "REB": "Rebounds",
+    "AST": "Assists",
+    "STL": "Steals",
+    "BLK": "Blocks",
+    "TO": "Turnovers",
+    "FGM": "Field goals made",
+    "FGA": "Field goals attempted",
+    "FGMI": "Field goals missed",
+    "FTM": "Free throws made",
+    "FTA": "Free throws attempted",
+    "FTMI": "Free throws missed",
+    "3PM": "Three pointers made",
+    "3PA": "Three pointers attempted",
+    "3PMI": "Three pointers missed",
+    "OREB": "Offensive rebounds",
+    "DREB": "Defensive rebounds",
+    "DD": "Double doubles",
+    "TD": "Triple doubles",
+}
 
 
 def to_row(player, year):
@@ -21,6 +42,16 @@ def to_row(player, year):
             "total": projected.get("total") or {},
         },
     }
+
+
+def to_scoring(scoring_items):
+    from espn_api.basketball.constant import STATS_MAP
+
+    rows = []
+    for item in scoring_items:
+        stat = STATS_MAP.get(str(item["statId"])) or str(item["statId"])
+        rows.append({"stat": stat, "label": STAT_LABELS.get(stat, stat), "points": item["points"]})
+    return sorted(rows, key=lambda row: -row["points"])
 
 
 def main():
@@ -41,6 +72,11 @@ def main():
     supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
     supabase.table("players").upsert(rows).execute()
     print(f"Upserted {len(rows)} players")
+
+    # Shown in the app's rules dialog, so it always matches the ESPN league the projections came from.
+    scoring = to_scoring(league.settings._raw_scoring_settings.get("scoringItems", []))
+    supabase.table("auction").update({"scoring": scoring}).eq("id", True).execute()
+    print(f"Saved {len(scoring)} scoring rules")
 
 
 if __name__ == "__main__":

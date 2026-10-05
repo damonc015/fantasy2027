@@ -43,3 +43,20 @@ def test_missing_projection_and_injury_status():
     row = to_row(make_player(stats={}, injuryStatus=[]), 2027)
     assert row["injury_status"] is None
     assert row["projections"] == {"fantasy_total": 0, "fantasy_avg": 0, "avg": {}, "total": {}}
+
+
+def test_maps_scoring_items_sorted_by_points():
+    from import_players import to_scoring
+
+    items = [
+        {"statId": 11, "points": -1.0},
+        {"statId": 0, "points": 1.0},
+        {"statId": 1, "points": 3.0},
+        {"statId": 999, "points": 0.5},
+    ]
+    assert to_scoring(items) == [
+        {"stat": "BLK", "label": "Blocks", "points": 3.0},
+        {"stat": "PTS", "label": "Points", "points": 1.0},
+        {"stat": "999", "label": "999", "points": 0.5},
+        {"stat": "TO", "label": "Turnovers", "points": -1.0},
+    ]
