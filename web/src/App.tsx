@@ -1,5 +1,5 @@
 import type { Session } from '@supabase/supabase-js'
-import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type FormEvent, memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { type Bid, type Budget, type CurrentBid, type Player, type ScoringRule, supabase } from './supabase'
 
 const TABS = ['draft', 'log', 'standings'] as const
@@ -149,6 +149,7 @@ function Draft({ userId }: { userId: string }) {
     )
     load()
   }
+  const queueBid = useCallback((playerId: number, amount: number) => setPending({ playerId, amount }), [])
 
   return (
     <div className="mx-auto max-w-7xl p-4">
@@ -198,7 +199,7 @@ function Draft({ userId }: { userId: string }) {
       )}
 
       {tab === 'draft' && (
-        <PlayerPool players={players} leaderOf={leaderOf} managerName={managerName} userId={userId} onBid={(playerId, amount) => setPending({ playerId, amount })} />
+        <PlayerPool players={players} leaderOf={leaderOf} managerName={managerName} userId={userId} onBid={queueBid} />
       )}
 
       <ConfirmBid
@@ -428,7 +429,7 @@ function PlayerPool(props: {
       </button>
     </th>
   )
-  const renderTable = (players: Player[], wrapClass: string) => (
+  const renderTable = (list: Player[], wrapClass: string) => (
     <div className={wrapClass}>
       <table className={table}>
         <thead className={tableHead}>
@@ -442,53 +443,17 @@ function PlayerPool(props: {
           </tr>
         </thead>
         <tbody>
-          {players.map((player) => {
+          {list.map((player) => {
             const leader = props.leaderOf.get(player.id)
-            const mine = leader?.manager_id === props.userId
             return (
-              <tr
+              <PlayerRow
                 key={player.id}
-                className={
-                  mine
-                    ? 'bg-emerald-500/15 shadow-[inset_3px_0_0_#10b981]'
-                    : leader
-                      ? 'bg-amber-400/20 shadow-[inset_3px_0_0_#f59e0b]'
-                      : stripedRow
-                }
-              >
-                <td className="whitespace-nowrap font-medium">
-                  <img
-                    src={`https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/${player.id}.png&w=96&h=70`}
-                    alt=""
-                    loading="lazy"
-                    width={48}
-                    height={35}
-                    onError={(event) => (event.currentTarget.style.visibility = 'hidden')}
-                    className="mr-2 inline-block"
-                  />
-                  {player.name}
-                  {player.injury_status && player.injury_status !== 'ACTIVE' && (
-                    <span className="ml-2 rounded bg-red-500/15 px-1.5 py-0.5 text-xs font-normal text-red-600">
-                      {player.injury_status}
-                    </span>
-                  )}
-                </td>
-                <td className="whitespace-nowrap text-muted">
-                  <TeamLogo team={player.team} size={24} />
-                  {player.team}
-                </td>
-                <td className="text-muted">{player.positions.join('/')}</td>
-                <td className={`${numeric} font-bold`}>{Math.round(player.projections.fantasy_total).toLocaleString()}</td>
-                <td className={numeric}>{player.projections.fantasy_avg.toFixed(1)}</td>
-                {STATS.map((stat) => (
-                  <td key={stat} className={numeric}>{player.projections.avg?.[stat]?.toFixed(1) ?? '-'}</td>
-                ))}
-                <td className={`${numeric} font-semibold`}>{leader ? money(leader.amount) : '-'}</td>
-                <td>{leader ? props.managerName.get(leader.manager_id) : <span className="text-muted">-</span>}</td>
-                <td>
-                  <BidForm key={leader?.amount} min={(leader?.amount ?? 0) + 1} onBid={(amount) => props.onBid(player.id, amount)} />
-                </td>
-              </tr>
+                player={player}
+                highBid={leader?.amount ?? null}
+                leaderName={leader ? (props.managerName.get(leader.manager_id) ?? null) : null}
+                mine={leader?.manager_id === props.userId}
+                onBid={props.onBid}
+              />
             )
           })}
         </tbody>
@@ -520,21 +485,77 @@ function PlayerPool(props: {
         </label>
         <span className="text-sm text-muted">{rows.length} players</span>
       </div>
-      {mineFirst ? (
-        <>
-          <h2 className="mt-3 text-sm font-semibold text-muted">My bids ({mineRows.length})</h2>
-          {mineRows.length > 0
-            ? renderTable(mineRows, 'mt-2 overflow-auto rounded-lg border border-line bg-card shadow-sm')
-            : <p className="mt-2 text-sm text-muted">You are not leading any players.</p>}
-          <h2 className="mt-4 text-sm font-semibold text-muted">Other players ({otherRows.length})</h2>
-          {renderTable(otherRows, tableWrap)}
-        </>
-      ) : (
-        renderTable(rows, tableWrap)
-      )}
+      {/* Keep both tables mounted so toggling only remounts your few led players, not the whole pool. */}
+      <div className={mineFirst ? undefined : 'hidden'}>
+        <h2 className="mt-3 text-sm font-semibold text-muted">My bids ({mineRows.length})</h2>
+        {mineRows.length > 0
+          ? renderTable(mineRows, 'mt-2 overflow-auto rounded-lg border border-line bg-card shadow-sm')
+          : <p className="mt-2 text-sm text-muted">You are not leading any players.</p>}
+        <h2 className="mt-4 text-sm font-semibold text-muted">Other players ({otherRows.length})</h2>
+      </div>
+      {renderTable(mineFirst ? otherRows : rows, tableWrap)}
     </>
   )
 }
+
+const PlayerRow = memo(function PlayerRow({
+  player,
+  highBid,
+  leaderName,
+  mine,
+  onBid,
+}: {
+  player: Player
+  highBid: number | null
+  leaderName: string | null
+  mine: boolean
+  onBid: (playerId: number, amount: number) => void
+}) {
+  return (
+    <tr
+      className={
+        mine
+          ? 'bg-emerald-500/15 shadow-[inset_3px_0_0_#10b981]'
+          : highBid != null
+            ? 'bg-amber-400/20 shadow-[inset_3px_0_0_#f59e0b]'
+            : stripedRow
+      }
+    >
+      <td className="whitespace-nowrap font-medium">
+        <img
+          src={`https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/${player.id}.png&w=96&h=70`}
+          alt=""
+          loading="lazy"
+          width={48}
+          height={35}
+          onError={(event) => (event.currentTarget.style.visibility = 'hidden')}
+          className="mr-2 inline-block"
+        />
+        {player.name}
+        {player.injury_status && player.injury_status !== 'ACTIVE' && (
+          <span className="ml-2 rounded bg-red-500/15 px-1.5 py-0.5 text-xs font-normal text-red-600">
+            {player.injury_status}
+          </span>
+        )}
+      </td>
+      <td className="whitespace-nowrap text-muted">
+        <TeamLogo team={player.team} size={24} />
+        {player.team}
+      </td>
+      <td className="text-muted">{player.positions.join('/')}</td>
+      <td className={`${numeric} font-bold`}>{Math.round(player.projections.fantasy_total).toLocaleString()}</td>
+      <td className={numeric}>{player.projections.fantasy_avg.toFixed(1)}</td>
+      {STATS.map((stat) => (
+        <td key={stat} className={numeric}>{player.projections.avg?.[stat]?.toFixed(1) ?? '-'}</td>
+      ))}
+      <td className={`${numeric} font-semibold`}>{highBid != null ? money(highBid) : '-'}</td>
+      <td>{leaderName ?? <span className="text-muted">-</span>}</td>
+      <td>
+        <BidForm key={highBid ?? 0} min={(highBid ?? 0) + 1} onBid={(amount) => onBid(player.id, amount)} />
+      </td>
+    </tr>
+  )
+})
 
 function TeamLogo({ team, size }: { team: string | null; size: number }) {
   if (!team || team === 'FA') return null
