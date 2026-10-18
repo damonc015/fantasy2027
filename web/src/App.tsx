@@ -387,6 +387,7 @@ function PlayerPool(props: {
   const [position, setPosition] = useState('')
   const [team, setTeam] = useState('')
   const [sort, setSort] = useState(TOTAL)
+  const [mineFirst, setMineFirst] = useState(true)
 
   const teams = useMemo(
     () => [...new Set(props.players.map((player) => player.team).filter((name): name is string => !!name))].sort(),
@@ -412,12 +413,87 @@ function PlayerPool(props: {
         .sort((a, b) => value(b) - value(a) || b.projections.fantasy_avg - a.projections.fantasy_avg),
     [props.players, search, position, team, value],
   )
+  const mineRows = useMemo(
+    () => rows.filter((player) => props.leaderOf.get(player.id)?.manager_id === props.userId),
+    [rows, props.leaderOf, props.userId],
+  )
+  const otherRows = useMemo(
+    () => (mineFirst ? rows.filter((player) => props.leaderOf.get(player.id)?.manager_id !== props.userId) : rows),
+    [rows, mineFirst, props.leaderOf, props.userId],
+  )
   const sortHeader = (label: string) => (
     <th key={label} className="text-right" aria-sort={sort === label ? 'descending' : undefined}>
       <button onClick={() => setSort(label)} className={`uppercase ${sort === label ? 'text-accent' : ''}`}>
         {label}{sort === label && ' ▼'}
       </button>
     </th>
+  )
+  const renderTable = (players: Player[], wrapClass: string) => (
+    <div className={wrapClass}>
+      <table className={table}>
+        <thead className={tableHead}>
+          <tr>
+            <th>Player</th>
+            <th>Team</th>
+            <th>Pos</th>
+            {SORTS.map(sortHeader)}
+            <th>Leader</th>
+            <th>Place Bid</th>
+          </tr>
+        </thead>
+        <tbody>
+          {players.map((player) => {
+            const leader = props.leaderOf.get(player.id)
+            const mine = leader?.manager_id === props.userId
+            return (
+              <tr
+                key={player.id}
+                className={
+                  mine
+                    ? 'bg-emerald-500/15 shadow-[inset_3px_0_0_#10b981]'
+                    : leader
+                      ? 'bg-amber-400/20 shadow-[inset_3px_0_0_#f59e0b]'
+                      : stripedRow
+                }
+              >
+                <td className="whitespace-nowrap font-medium">
+                  <img
+                    src={`https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/${player.id}.png&w=96&h=70`}
+                    alt=""
+                    loading="lazy"
+                    width={48}
+                    height={35}
+                    onError={(event) => (event.currentTarget.style.visibility = 'hidden')}
+                    className="mr-2 inline-block"
+                  />
+                  {player.name}
+                  {player.injury_status && player.injury_status !== 'ACTIVE' && (
+                    <span className="ml-2 rounded bg-red-500/15 px-1.5 py-0.5 text-xs font-normal text-red-600">
+                      {player.injury_status}
+                    </span>
+                  )}
+                </td>
+                <td className="whitespace-nowrap text-muted">
+                  <TeamLogo team={player.team} size={24} />
+                  {player.team}
+                </td>
+                <td className="text-muted">{player.positions.join('/')}</td>
+                <td className={`${numeric} font-bold`}>{Math.round(player.projections.fantasy_total).toLocaleString()}</td>
+                <td className={numeric}>{player.projections.fantasy_avg.toFixed(1)}</td>
+                {STATS.map((stat) => (
+                  <td key={stat} className={numeric}>{player.projections.avg?.[stat]?.toFixed(1) ?? '-'}</td>
+                ))}
+                <td className={`${numeric} font-semibold`}>{leader ? money(leader.amount) : '-'}</td>
+                <td>{leader ? props.managerName.get(leader.manager_id) : <span className="text-muted">-</span>}</td>
+                <td>
+                  <BidForm key={leader?.amount} min={(leader?.amount ?? 0) + 1} onBid={(amount) => props.onBid(player.id, amount)} />
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
   )
 
   return (
@@ -438,73 +514,24 @@ function PlayerPool(props: {
         <select value={sort} onChange={(event) => setSort(event.target.value)} aria-label="Sort by" className={control}>
           {SORTS.map((name) => <option key={name} value={name}>Sort: {name}</option>)}
         </select>
+        <label className="flex items-center gap-1.5 text-sm">
+          <input type="checkbox" checked={mineFirst} onChange={(event) => setMineFirst(event.target.checked)} />
+          My bids on top
+        </label>
         <span className="text-sm text-muted">{rows.length} players</span>
       </div>
-      <div className={tableWrap}>
-        <table className={table}>
-          <thead className={tableHead}>
-            <tr>
-              <th>Player</th>
-              <th>Team</th>
-              <th>Pos</th>
-              {SORTS.map(sortHeader)}
-              <th>Leader</th>
-              <th>Place Bid</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((player) => {
-              const leader = props.leaderOf.get(player.id)
-              const mine = leader?.manager_id === props.userId
-              return (
-                <tr
-                  key={player.id}
-                  className={
-                    mine
-                      ? 'bg-emerald-500/15 shadow-[inset_3px_0_0_#10b981]'
-                      : leader
-                        ? 'bg-amber-400/20 shadow-[inset_3px_0_0_#f59e0b]'
-                        : stripedRow
-                  }
-                >
-                  <td className="whitespace-nowrap font-medium">
-                    <img
-                      src={`https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/${player.id}.png&w=96&h=70`}
-                      alt=""
-                      loading="lazy"
-                      width={48}
-                      height={35}
-                      onError={(event) => (event.currentTarget.style.visibility = 'hidden')}
-                      className="mr-2 inline-block"
-                    />
-                    {player.name}
-                    {player.injury_status && player.injury_status !== 'ACTIVE' && (
-                      <span className="ml-2 rounded bg-red-500/15 px-1.5 py-0.5 text-xs font-normal text-red-600">
-                        {player.injury_status}
-                      </span>
-                    )}
-                  </td>
-                  <td className="whitespace-nowrap text-muted">
-                    <TeamLogo team={player.team} size={24} />
-                    {player.team}
-                  </td>
-                  <td className="text-muted">{player.positions.join('/')}</td>
-                  <td className={`${numeric} font-bold`}>{Math.round(player.projections.fantasy_total).toLocaleString()}</td>
-                  <td className={numeric}>{player.projections.fantasy_avg.toFixed(1)}</td>
-                  {STATS.map((stat) => (
-                    <td key={stat} className={numeric}>{player.projections.avg?.[stat]?.toFixed(1) ?? '-'}</td>
-                  ))}
-                  <td className={`${numeric} font-semibold`}>{leader ? money(leader.amount) : '-'}</td>
-                  <td>{leader ? props.managerName.get(leader.manager_id) : <span className="text-muted">-</span>}</td>
-                  <td>
-                    <BidForm key={leader?.amount} min={(leader?.amount ?? 0) + 1} onBid={(amount) => props.onBid(player.id, amount)} />
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
+      {mineFirst ? (
+        <>
+          <h2 className="mt-3 text-sm font-semibold text-muted">My bids ({mineRows.length})</h2>
+          {mineRows.length > 0
+            ? renderTable(mineRows, 'mt-2 overflow-auto rounded-lg border border-line bg-card shadow-sm')
+            : <p className="mt-2 text-sm text-muted">You are not leading any players.</p>}
+          <h2 className="mt-4 text-sm font-semibold text-muted">Other players ({otherRows.length})</h2>
+          {renderTable(otherRows, tableWrap)}
+        </>
+      ) : (
+        renderTable(rows, tableWrap)
+      )}
     </>
   )
 }
