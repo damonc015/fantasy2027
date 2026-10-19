@@ -53,4 +53,4 @@ To run another round for unsold players, update `auction.closes_at` to a new dea
 ```sh
 npx supabase db start && npx supabase test db   # bid rules, needs Docker
 .venv/bin/python -m pytest scripts               # ESPN mapping
-```
+``

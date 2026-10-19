@@ -15,7 +15,9 @@ export type Player = {
 }
 export type ScoringRule = { stat: string; label: string; points: number }
 export type CurrentBid = { player_id: number; manager_id: string; amount: number }
-export type Bid = CurrentBid & { id: number; created_at: string }
+export type Bid = CurrentBid & { id: number; created_at: string; auto: boolean }
+export type MaxBid = { player_id: number; amount: number }
+export type BidResult = { leading: boolean; price: number; max: number }
 export type Budget = {
   manager_id: string
   name: string
