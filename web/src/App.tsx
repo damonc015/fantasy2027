@@ -33,6 +33,50 @@ type PendingBid = { playerId: number; amount: number }
 
 const tabFromHash = (): Tab => TABS.find((tab) => `#${tab}` === location.hash) ?? 'draft'
 
+const TITLE = 'Fantasy 2027 Auction'
+const SEEN_KEY = 'outbid-seen'
+// Losses before `since` are ignored; `keys` are losses already shown as a toast or acknowledged in the banner.
+type Seen = { since: number; keys: string[] }
+const lossKey = (bid: CurrentBid) => `${bid.player_id}:${bid.created_at}`
+
+function readSeen(): Seen {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SEEN_KEY) ?? 'null')
+    if (saved?.since) return saved
+  } catch {}
+  return { since: Date.now(), keys: [] }
+}
+
+function writeSeen(seen: Seen) {
+  try {
+    localStorage.setItem(SEEN_KEY, JSON.stringify(seen))
+  } catch {}
+}
+
+// Dev-only preview of outbid notices: open the app with ?demo-outbid
+const DEMO = import.meta.env.DEV && new URLSearchParams(location.search).has('demo-outbid')
+const DEMO_START = Date.now()
+
+function demoLosses(players: Player[], managerId: string | undefined, elapsedSeconds: number): CurrentBid[] {
+  if (!managerId) return []
+  return players
+    .slice(0, 7)
+    .map((player, index) => ({
+      player_id: player.id,
+      manager_id: managerId,
+      amount: 51 + 10 * index,
+      // the first four count as lost while away (banner), the rest arrive live 3 seconds apart (toast)
+      created_at: new Date(DEMO_START + (index < 4 ? -60_000 : 3_000 * (index - 3))).toISOString(),
+    }))
+    .filter((bid) => Date.parse(bid.created_at) <= DEMO_START + elapsedSeconds * 1000)
+}
+
+function showRow(playerId: number) {
+  const row = document.getElementById(`player-${playerId}`)
+  row?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  row?.animate([{ backgroundColor: 'rgb(245 158 11 / 0.5)' }, {}], 2000)
+}
+
 export default function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined)
 
@@ -91,10 +135,19 @@ function Draft({ userId }: { userId: string }) {
   const [scoring, setScoring] = useState<ScoringRule[]>([])
   const [message, setMessage] = useState<Message | null>(null)
   const [pending, setPending] = useState<PendingBid | null>(null)
+  const [seen, setSeen] = useState(() => {
+    const initial = readSeen()
+    writeSeen(initial)
+    return initial
+  })
+  const [visible, setVisible] = useState(() => document.visibilityState === 'visible')
+  // Losses from before this moment (page load or tab coming back into view) go to the banner, later ones to a toast.
+  const [returnedAt, setReturnedAt] = useState(Date.now)
+  const [demoTick, setDemoTick] = useState(0)
 
   const load = useCallback(async () => {
     const [leadersResult, bidsResult, budgetsResult, auctionResult, maxesResult] = await Promise.all([
-      supabase.from('current_bids').select('player_id, manager_id, amount'),
+      supabase.from('current_bids').select('player_id, manager_id, amount, created_at'),
       supabase.from('bids').select('*').order('id', { ascending: false }).limit(200),
       supabase.from('manager_budgets').select('*').order('name'),
       supabase.from('auction').select('closes_at, roster_size, scoring').maybeSingle(),
@@ -110,6 +163,22 @@ function Draft({ userId }: { userId: string }) {
     setClosesAt(auctionResult.data?.closes_at ?? null)
     setRosterSize(auctionResult.data?.roster_size ?? null)
     setScoring(auctionResult.data?.scoring ?? [])
+  }, [])
+
+  useEffect(() => {
+    if (!DEMO) return
+    const timer = setInterval(() => setDemoTick((tick) => tick + 1), 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    const onVisibility = () => {
+      const now = document.visibilityState === 'visible'
+      if (now) setReturnedAt(Date.now())
+      setVisible(now)
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [])
 
   useEffect(() => {
@@ -141,6 +210,43 @@ function Draft({ userId }: { userId: string }) {
   const lockedAbovePrice = leaders
     .filter((bid) => bid.manager_id === userId)
     .reduce((sum, bid) => sum + (maxOf.get(bid.player_id) ?? bid.amount) - bid.amount, 0)
+  const unseen = useMemo(() => {
+    const keys = new Set(seen.keys)
+    if (DEMO) {
+      const rival = budgets.find((row) => row.manager_id !== userId)?.manager_id
+      return demoLosses(players, rival, demoTick).filter((bid) => !keys.has(lossKey(bid)))
+    }
+    return leaders.filter(
+      (bid) =>
+        bid.manager_id !== userId &&
+        maxOf.has(bid.player_id) &&
+        Date.parse(bid.created_at) > seen.since &&
+        !keys.has(lossKey(bid)),
+    )
+  }, [leaders, maxOf, userId, seen, players, budgets, demoTick])
+  const markSeen = useCallback((keys: string[]) => {
+    setSeen((prev) => {
+      const next = { since: prev.since, keys: [...prev.keys, ...keys] }
+      writeSeen(next)
+      return next
+    })
+  }, [])
+
+  // ponytail: compares server bid times to the browser clock, a few seconds of skew can put a loss in the wrong bucket
+  const banner = unseen.filter((bid) => Date.parse(bid.created_at) <= returnedAt)
+  const toasts = unseen.filter((bid) => Date.parse(bid.created_at) > returnedAt)
+  const toastKeys = toasts.map(lossKey).join(' ')
+
+  useEffect(() => {
+    document.title = !visible && unseen.length > 0 ? `(${unseen.length}) ${TITLE}` : TITLE
+  }, [visible, unseen.length])
+
+  useEffect(() => {
+    if (!visible || !toastKeys) return
+    const timer = setTimeout(() => markSeen(toastKeys.split(' ')), 6000)
+    return () => clearTimeout(timer)
+  }, [visible, toastKeys, markSeen])
+
   const positionsOf = useMemo(() => new Map(players.map((player) => [player.id, player.positions])), [players])
   // A player eligible at two positions counts toward both.
   const myPositions = POSITIONS.map((position) => ({
@@ -152,6 +258,15 @@ function Draft({ userId }: { userId: string }) {
     const { data, error } = await supabase.rpc('place_bid', { p_player_id: playerId, p_amount: amount })
     const result = data as BidResult | null
     const name = playerName.get(playerId)
+    if (result && !result.leading) {
+      // You never led, so this is not a loss to notify about; the message below already says it.
+      const { data: leader } = await supabase
+        .from('current_bids')
+        .select('player_id, manager_id, amount, created_at')
+        .eq('player_id', playerId)
+        .single()
+      if (leader) markSeen([lossKey(leader)])
+    }
     setPending(null)
     setMessage(
       error || !result
@@ -216,6 +331,34 @@ function Draft({ userId }: { userId: string }) {
         >
           {message.text}
         </p>
+      )}
+
+      {tab === 'draft' && visible && toasts.length > 0 && (
+        <p role="status" className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/15 px-3 py-2 text-sm">
+          Outbid on{' '}
+          {toasts
+            .map((bid) => `${playerName.get(bid.player_id)} (${managerName.get(bid.manager_id)} leads at ${money(bid.amount)})`)
+            .join(', ')}
+          .
+        </p>
+      )}
+
+      {tab === 'draft' && banner.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-amber-500/40 bg-amber-500/15 px-3 py-2 text-sm">
+          <b>While you were away you lost:</b>
+          {banner.map((bid) => (
+            <button key={lossKey(bid)} type="button" onClick={() => showRow(bid.player_id)} className="underline hover:text-accent">
+              {playerName.get(bid.player_id)} (now {money(bid.amount)}, {managerName.get(bid.manager_id)})
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => markSeen(banner.map(lossKey))}
+            className={`${control} ml-auto`}
+          >
+            Got it
+          </button>
+        </div>
       )}
 
       {tab === 'draft' && (
@@ -551,6 +694,7 @@ const PlayerRow = memo(function PlayerRow({
 }) {
   return (
     <tr
+      id={`player-${player.id}`}
       className={
         mine
           ? 'bg-emerald-500/15 shadow-[inset_3px_0_0_#10b981]'
