@@ -131,6 +131,9 @@ function Draft({ userId }: { userId: string }) {
   const [myMaxes, setMyMaxes] = useState<MaxBid[]>([])
   const [budgets, setBudgets] = useState<Budget[]>([])
   const [closesAt, setClosesAt] = useState<string | null>(null)
+  const [blindClosesAt, setBlindClosesAt] = useState<string | null>(null)
+  const [myBlindBids, setMyBlindBids] = useState<MaxBid[]>([])
+  const [now, setNow] = useState(Date.now)
   const [rosterSize, setRosterSize] = useState<number | null>(null)
   const [scoring, setScoring] = useState<ScoringRule[]>([])
   const [message, setMessage] = useState<Message | null>(null)
@@ -146,24 +149,37 @@ function Draft({ userId }: { userId: string }) {
   const [demoTick, setDemoTick] = useState(0)
 
   const load = useCallback(async () => {
-    const [leadersResult, bidsResult, budgetsResult, auctionResult, maxesResult] = await Promise.all([
+    const [leadersResult, bidsResult, budgetsResult, auctionResult, maxesResult, blindResult] = await Promise.all([
       supabase.from('current_bids').select('player_id, manager_id, amount, created_at'),
       supabase.from('bids').select('*').order('id', { ascending: false }).limit(200),
       supabase.from('manager_budgets').select('*').order('name'),
-      supabase.from('auction').select('closes_at, roster_size, scoring').maybeSingle(),
-      // RLS returns only this manager's own maxes
+      supabase.from('auction').select('closes_at, blind_closes_at, roster_size, scoring').maybeSingle(),
+      // RLS returns only this manager's own maxes and sealed bids
       supabase.from('max_bids').select('player_id, amount'),
+      supabase.from('blind_bids').select('player_id, amount'),
     ])
-    const failure = leadersResult.error ?? bidsResult.error ?? budgetsResult.error ?? auctionResult.error ?? maxesResult.error
+    const failure =
+      leadersResult.error ?? bidsResult.error ?? budgetsResult.error ?? auctionResult.error ?? maxesResult.error ?? blindResult.error
     if (failure) return setMessage({ text: failure.message, tone: 'error' })
     setLeaders(leadersResult.data ?? [])
     setBids(bidsResult.data ?? [])
     setMyMaxes(maxesResult.data ?? [])
+    setMyBlindBids(blindResult.data ?? [])
     setBudgets(budgetsResult.data ?? [])
     setClosesAt(auctionResult.data?.closes_at ?? null)
+    setBlindClosesAt(auctionResult.data?.blind_closes_at ?? null)
+    setNow(Date.now())
     setRosterSize(auctionResult.data?.roster_size ?? null)
     setScoring(auctionResult.data?.scoring ?? [])
   }, [])
+
+  // Re-render right when the next deadline passes, so the page switches rounds on time.
+  useEffect(() => {
+    const next = [closesAt, blindClosesAt].map((date) => (date ? Date.parse(date) : NaN)).find((time) => time > now)
+    if (next === undefined) return
+    const timer = setTimeout(() => setNow(Date.now()), Math.min(next - now + 100, 2 ** 31 - 1))
+    return () => clearTimeout(timer)
+  }, [closesAt, blindClosesAt, now])
 
   useEffect(() => {
     if (!DEMO) return
@@ -206,8 +222,11 @@ function Draft({ userId }: { userId: string }) {
   const leaderOf = useMemo(() => new Map(leaders.map((bid) => [bid.player_id, bid])), [leaders])
   const me = budgets.find((row) => row.manager_id === userId)
   const maxOf = useMemo(() => new Map(myMaxes.map((max) => [max.player_id, max.amount])), [myMaxes])
-  // Standings show visible prices, but your full max on each player you lead is locked.
-  const lockedAbovePrice = leaders
+  const blindBidOf = useMemo(() => new Map(myBlindBids.map((bid) => [bid.player_id, bid.amount])), [myBlindBids])
+  const mainOpen = closesAt != null && now < Date.parse(closesAt)
+  const blind = !mainOpen && blindClosesAt != null && now < Date.parse(blindClosesAt)
+  // Standings show visible prices, but while the main round is open your full max on each player you lead is locked.
+  const lockedAbovePrice = !mainOpen ? 0 : leaders
     .filter((bid) => bid.manager_id === userId)
     .reduce((sum, bid) => sum + (maxOf.get(bid.player_id) ?? bid.amount) - bid.amount, 0)
   const unseen = useMemo(() => {
@@ -254,6 +273,25 @@ function Draft({ userId }: { userId: string }) {
     count: leaders.filter((bid) => bid.manager_id === userId && positionsOf.get(bid.player_id)?.includes(position)).length,
   }))
 
+  async function placeBlindBid({ playerId, amount }: PendingBid) {
+    const { error } = await supabase.rpc('place_blind_bid', { p_player_id: playerId, p_amount: amount })
+    setPending(null)
+    setMessage(
+      error
+        ? { text: error.message, tone: 'error' }
+        : { text: `Sealed bid of ${money(amount)} on ${playerName.get(playerId)} saved.`, tone: 'ok' },
+    )
+    load()
+  }
+  const cancelBlindBid = useCallback(
+    async (playerId: number) => {
+      const { error } = await supabase.rpc('cancel_blind_bid', { p_player_id: playerId })
+      setMessage(error ? { text: error.message, tone: 'error' } : { text: 'Sealed bid withdrawn.', tone: 'ok' })
+      load()
+    },
+    [load],
+  )
+
   async function placeBid({ playerId, amount }: PendingBid) {
     const { data, error } = await supabase.rpc('place_bid', { p_player_id: playerId, p_amount: amount })
     const result = data as BidResult | null
@@ -286,8 +324,8 @@ function Draft({ userId }: { userId: string }) {
     <div className="mx-auto max-w-7xl p-4">
       <header className="flex flex-wrap items-center gap-2">
         <h1 className="text-xl font-bold">Fantasy 2027 Auction</h1>
-        <Rules closesAt={closesAt} rosterSize={rosterSize} budget={me?.budget} scoring={scoring} />
-        <Countdown closesAt={closesAt} />
+        <Rules closesAt={closesAt} blindClosesAt={blindClosesAt} rosterSize={rosterSize} budget={me?.budget} scoring={scoring} />
+        <Countdown closesAt={blind ? blindClosesAt : closesAt} label={blind ? 'Blind round closes in' : 'Closes in'} />
         {me && (
           <>
             <span className={pill} title="Budget minus the max you set on each player you lead"><b>{money(me.remaining - lockedAbovePrice)}</b> left</span>
@@ -362,14 +400,25 @@ function Draft({ userId }: { userId: string }) {
       )}
 
       {tab === 'draft' && (
-        <PlayerPool players={players} leaderOf={leaderOf} maxOf={maxOf} managerName={managerName} userId={userId} onBid={queueBid} />
+        <PlayerPool
+          players={players}
+          leaderOf={leaderOf}
+          maxOf={maxOf}
+          blind={blind}
+          blindBidOf={blindBidOf}
+          managerName={managerName}
+          userId={userId}
+          onBid={queueBid}
+          onCancelBlind={cancelBlindBid}
+        />
       )}
 
       <ConfirmBid
         pending={pending}
         playerName={pending ? playerName.get(pending.playerId) : undefined}
+        blind={blind}
         onCancel={() => setPending(null)}
-        onConfirm={placeBid}
+        onConfirm={blind ? placeBlindBid : placeBid}
       />
 
       {tab === 'log' && (
@@ -382,6 +431,7 @@ function Draft({ userId }: { userId: string }) {
               <td className="font-semibold tabular-nums">
                 {money(bid.amount)}
                 {bid.auto && <span className="ml-1.5 text-xs font-normal text-muted" title="Placed by this manager's max bid">(auto)</span>}
+                {bid.blind && <span className="ml-1.5 text-xs font-normal text-muted" title="Won in the blind round">(blind)</span>}
               </td>
             </tr>
           ))}
@@ -434,6 +484,7 @@ function Draft({ userId }: { userId: string }) {
 
 function Rules(props: {
   closesAt: string | null
+  blindClosesAt: string | null
   rosterSize: number | null
   budget: number | undefined
   scoring: ScoringRule[]
@@ -483,6 +534,25 @@ function Rules(props: {
           <li>You get a Discord ping. You can bid on that player again or spend the money elsewhere.</li>
         </ul>
 
+        {props.blindClosesAt && (
+          <>
+            <h3>Blind round</h3>
+            <ul>
+              <li>
+                After the main auction closes, a blind round runs until{' '}
+                <b>{new Date(props.blindClosesAt).toLocaleString([], { dateStyle: 'full', timeStyle: 'short' })}</b>.
+              </li>
+              <li>Only managers with an empty roster spot can bid, and only on players nobody won.</li>
+              <li>Bids are sealed: nobody sees anyone else's bids. You can change or withdraw yours until the deadline.</li>
+              <li>The highest bid wins and pays what they bid. On equal bids, the earlier one wins.</li>
+              <li>
+                You can bid on more players than you have spots, as backups. Results go from the highest bid down, and a bid is
+                skipped once you run out of spots or money.
+              </li>
+            </ul>
+          </>
+        )}
+
         <h3>Row colors</h3>
         <ul className="list-none! pl-0!">
           <li><span className={`${swatch} bg-emerald-500`} />Green: you lead this player.</li>
@@ -525,7 +595,7 @@ function Rules(props: {
   )
 }
 
-function Countdown({ closesAt }: { closesAt: string | null }) {
+function Countdown({ closesAt, label }: { closesAt: string | null; label: string }) {
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000)
@@ -537,7 +607,7 @@ function Countdown({ closesAt }: { closesAt: string | null }) {
   if (seconds <= 0) return <span className={`${pill} font-semibold text-red-600`}>Auction closed</span>
   const days = Math.floor(seconds / 86400)
   const clock = new Date(seconds * 1000).toISOString().slice(11, 19)
-  return <span className={pill}>Closes in <b>{days > 0 && `${days}d `}{clock}</b></span>
+  return <span className={pill}>{label} <b>{days > 0 && `${days}d `}{clock}</b></span>
 }
 
 function Table({ head, children }: { head: string[]; children: ReactNode }) {
@@ -557,9 +627,12 @@ function PlayerPool(props: {
   players: Player[]
   leaderOf: Map<number, CurrentBid>
   maxOf: Map<number, number>
+  blind: boolean
+  blindBidOf: Map<number, number>
   managerName: Map<string, string>
   userId: string
   onBid: (playerId: number, amount: number) => void
+  onCancelBlind: (playerId: number) => void
 }) {
   const [search, setSearch] = useState('')
   const [position, setPosition] = useState('')
@@ -616,7 +689,7 @@ function PlayerPool(props: {
             <th>Pos</th>
             {SORTS.map(sortHeader)}
             <th>Leader</th>
-            <th>Max Bid</th>
+            <th>{props.blind ? 'Sealed Bid' : 'Max Bid'}</th>
           </tr>
         </thead>
         <tbody>
@@ -631,7 +704,10 @@ function PlayerPool(props: {
                 leaderName={leader ? (props.managerName.get(leader.manager_id) ?? null) : null}
                 mine={mine}
                 myMax={mine ? (props.maxOf.get(player.id) ?? null) : null}
+                blind={props.blind}
+                myBlindBid={props.blindBidOf.get(player.id) ?? null}
                 onBid={props.onBid}
+                onCancelBlind={props.onCancelBlind}
               />
             )
           })}
@@ -683,14 +759,20 @@ const PlayerRow = memo(function PlayerRow({
   leaderName,
   mine,
   myMax,
+  blind,
+  myBlindBid,
   onBid,
+  onCancelBlind,
 }: {
   player: Player
   highBid: number | null
   leaderName: string | null
   mine: boolean
   myMax: number | null
+  blind: boolean
+  myBlindBid: number | null
   onBid: (playerId: number, amount: number) => void
+  onCancelBlind: (playerId: number) => void
 }) {
   return (
     <tr
@@ -736,7 +818,20 @@ const PlayerRow = memo(function PlayerRow({
       </td>
       <td>{leaderName ?? <span className="text-muted">-</span>}</td>
       <td>
-        <BidForm key={`${highBid}-${myMax}`} min={(myMax ?? highBid ?? 0) + 1} onBid={(amount) => onBid(player.id, amount)} />
+        {!blind ? (
+          <BidForm key={`${highBid}-${myMax}`} min={(myMax ?? highBid ?? 0) + 1} onBid={(amount) => onBid(player.id, amount)} />
+        ) : highBid != null ? (
+          <span className="text-muted">Taken</span>
+        ) : (
+          <div className="flex items-center gap-2">
+            <BidForm key={myBlindBid ?? 0} min={1} value={myBlindBid ?? 1} onBid={(amount) => onBid(player.id, amount)} />
+            {myBlindBid != null && (
+              <button type="button" onClick={() => onCancelBlind(player.id)} className="text-xs text-muted underline hover:text-red-600">
+                Withdraw {money(myBlindBid)}
+              </button>
+            )}
+          </div>
+        )}
       </td>
     </tr>
   )
@@ -820,6 +915,7 @@ function TeamFilter({ teams, value, onChange }: { teams: string[]; value: string
 function ConfirmBid(props: {
   pending: PendingBid | null
   playerName: string | undefined
+  blind: boolean
   onCancel: () => void
   onConfirm: (bid: PendingBid) => Promise<void>
 }) {
@@ -846,16 +942,31 @@ function ConfirmBid(props: {
       aria-labelledby="confirm-bid-title"
       className="m-auto w-[calc(100%-2rem)] max-w-sm rounded-xl border border-line bg-card p-5 text-ink shadow-xl backdrop:bg-black/50"
     >
-      <h2 id="confirm-bid-title" className="text-lg font-bold">Confirm max bid</h2>
-      <p className="mt-2">
-        Set a max of <b>{pending && money(pending.amount)}</b> on <b>{props.playerName}</b>?
-      </p>
-      <p className="mt-2 text-sm text-muted">
-        The site bids only as much as needed to keep you in the lead, up to your max. Other managers cannot see your max.
-      </p>
-      <p className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
-        You are committing up to this amount. You cannot lower, revoke, or delete your max.
-      </p>
+      {props.blind ? (
+        <>
+          <h2 id="confirm-bid-title" className="text-lg font-bold">Confirm sealed bid</h2>
+          <p className="mt-2">
+            Bid <b>{pending && money(pending.amount)}</b> on <b>{props.playerName}</b> in the blind round?
+          </p>
+          <p className="mt-2 text-sm text-muted">
+            Nobody else sees your bid. If it is the highest when the blind round closes, you win the player and pay this amount.
+            You can change or withdraw it until then.
+          </p>
+        </>
+      ) : (
+        <>
+          <h2 id="confirm-bid-title" className="text-lg font-bold">Confirm max bid</h2>
+          <p className="mt-2">
+            Set a max of <b>{pending && money(pending.amount)}</b> on <b>{props.playerName}</b>?
+          </p>
+          <p className="mt-2 text-sm text-muted">
+            The site bids only as much as needed to keep you in the lead, up to your max. Other managers cannot see your max.
+          </p>
+          <p className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
+            You are committing up to this amount. You cannot lower, revoke, or delete your max.
+          </p>
+        </>
+      )}
       <div className="mt-4 flex justify-end gap-2">
         <button type="button" autoFocus onClick={props.onCancel} className={control}>Cancel</button>
         <button type="button" disabled={busy} onClick={confirm} className={button}>Confirm bid</button>
@@ -864,7 +975,7 @@ function ConfirmBid(props: {
   )
 }
 
-function BidForm({ min, onBid }: { min: number; onBid: (amount: number) => void }) {
+function BidForm({ min, value = min, onBid }: { min: number; value?: number; onBid: (amount: number) => void }) {
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     onBid(Number(new FormData(event.currentTarget).get('amount')))
@@ -877,7 +988,7 @@ function BidForm({ min, onBid }: { min: number; onBid: (amount: number) => void 
         name="amount"
         type="number"
         min={min}
-        defaultValue={min}
+        defaultValue={value}
         required
         aria-label="Max bid amount"
         className="w-24 rounded-md border border-line bg-card px-1.5 py-1 tabular-nums"

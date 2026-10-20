@@ -46,11 +46,22 @@ All of this lives in `place_bid` in `supabase/migrations/`. It is the only way t
    ```
    Deploy `web/` to any static host with build command `npm run build` and output directory `dist`.
 
-To run another round for unsold players, update `auction.closes_at` to a new deadline.
+## Blind round
+
+After the main deadline, managers with open roster spots can place sealed bids on unsold players. To run one:
+
+1. Set its deadline (after `closes_at`):
+   ```sh
+   npx supabase db query --linked "update auction set blind_closes_at = '2026-10-22 00:00:00 America/New_York'"
+   ```
+2. After `blind_closes_at` passes, award the players. Bids are settled from the highest down, and a bid is skipped when the player is taken or the manager is out of spots or money. It returns the number of players awarded:
+   ```sh
+   npx supabase db query --linked "select resolve_blind()"
+   ```
 
 ## Tests
 
 ```sh
 npx supabase db start && npx supabase test db   # bid rules, needs Docker
 .venv/bin/python -m pytest scripts               # ESPN mapping
-``
+```
