@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(13);
+select plan(18);
 
 insert into auth.users (id, email) values
   ('00000000-0000-0000-0000-00000000000a', 'a@test.local'),
@@ -37,10 +37,17 @@ select throws_ok('select reset_countdown()', 'P0001', 'Only the commissioner can
 
 select pg_temp.act_as('a');
 select lives_ok('select reset_countdown()', 'admin resets a false start');
-select results_eq(
-  'select closes_at, blind_closes_at from auction',
-  $$values (null::timestamptz, null::timestamptz)$$,
-  'reset clears both deadlines');
+select is((select closes_at from auction), null, 'reset clears the main deadline');
+select isnt((select blind_closes_at from auction), null, 'reset keeps the blind deadline');
+
+select pg_temp.act_as('b');
+select throws_ok('select place_blind_bid(1, 5)', 'P0001', 'Blind round is not open', 'no blind bids while the main round has no deadline');
+
+select pg_temp.act_as('a');
+update auction set blind_closes_at = '2030-01-01 23:59:00+00';
+select lives_ok('select start_countdown()', 'admin starts again');
+select is((select blind_closes_at from auction), '2030-01-01 23:59:00+00'::timestamptz, 'a preset blind deadline is kept');
+select lives_ok('select reset_countdown()', 'admin resets again');
 
 update auction set closes_at = now() - interval '1 second', blind_closes_at = now() + interval '1 day';
 select throws_ok('select reset_countdown()', 'P0001', 'Main round is over', 'cannot reopen a finished main round');
