@@ -684,7 +684,6 @@ function PlayerPool(props: {
       <table className={table}>
         <thead className={tableHead}>
           <tr>
-            <th className="text-right">#</th>
             <th>Player</th>
             <th>Team</th>
             <th>Pos</th>
@@ -694,13 +693,12 @@ function PlayerPool(props: {
           </tr>
         </thead>
         <tbody>
-          {list.map((player, index) => {
+          {list.map((player) => {
             const leader = props.leaderOf.get(player.id)
             const mine = leader?.manager_id === props.userId
             return (
               <PlayerRow
                 key={player.id}
-                rank={index + 1}
                 player={player}
                 highBid={leader?.amount ?? null}
                 leaderName={leader ? (props.managerName.get(leader.manager_id) ?? null) : null}
@@ -756,7 +754,6 @@ function PlayerPool(props: {
 }
 
 const PlayerRow = memo(function PlayerRow({
-  rank,
   player,
   highBid,
   leaderName,
@@ -767,7 +764,6 @@ const PlayerRow = memo(function PlayerRow({
   onBid,
   onCancelBlind,
 }: {
-  rank: number
   player: Player
   highBid: number | null
   leaderName: string | null
@@ -789,7 +785,6 @@ const PlayerRow = memo(function PlayerRow({
             : stripedRow
       }
     >
-      <td className={`${numeric} text-muted`}>{rank}</td>
       <td className="font-medium">
         {/* Fixed width keeps long names from widening the table; the full name shows on hover. */}
         <div className="flex w-60 items-center gap-2 whitespace-nowrap">
