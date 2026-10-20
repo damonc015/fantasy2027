@@ -134,6 +134,7 @@ function Draft({ userId }: { userId: string }) {
   const [blindClosesAt, setBlindClosesAt] = useState<string | null>(null)
   const [myBlindBids, setMyBlindBids] = useState<MaxBid[]>([])
   const [now, setNow] = useState(Date.now)
+  const [isAdmin, setIsAdmin] = useState(false)
   const [rosterSize, setRosterSize] = useState<number | null>(null)
   const [scoring, setScoring] = useState<ScoringRule[]>([])
   const [message, setMessage] = useState<Message | null>(null)
@@ -198,6 +199,7 @@ function Draft({ userId }: { userId: string }) {
   }, [])
 
   useEffect(() => {
+    supabase.from('managers').select('is_admin').eq('id', userId).maybeSingle().then(({ data }) => setIsAdmin(!!data?.is_admin))
     supabase.from('players').select('*').then(({ data, error }) => {
       if (error) setMessage({ text: error.message, tone: 'error' })
       else setPlayers(data ?? [])
@@ -206,6 +208,8 @@ function Draft({ userId }: { userId: string }) {
     const channel = supabase
       .channel('bids')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'bids' }, load)
+      // the commissioner starting or resetting the countdown updates everyone's timer
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'auction' }, load)
       .subscribe((status) => status === 'SUBSCRIBED' && load())
     const onHash = () => setTab(tabFromHash())
     window.addEventListener('focus', load)
@@ -215,7 +219,7 @@ function Draft({ userId }: { userId: string }) {
       window.removeEventListener('focus', load)
       window.removeEventListener('hashchange', onHash)
     }
-  }, [load])
+  }, [load, userId])
 
   const playerName = useMemo(() => new Map(players.map((player) => [player.id, player.name])), [players])
   const managerName = useMemo(() => new Map(budgets.map((row) => [row.manager_id, row.name])), [budgets])
@@ -223,7 +227,8 @@ function Draft({ userId }: { userId: string }) {
   const me = budgets.find((row) => row.manager_id === userId)
   const maxOf = useMemo(() => new Map(myMaxes.map((max) => [max.player_id, max.amount])), [myMaxes])
   const blindBidOf = useMemo(() => new Map(myBlindBids.map((bid) => [bid.player_id, bid.amount])), [myBlindBids])
-  const mainOpen = closesAt != null && now < Date.parse(closesAt)
+  // no deadline means the main round is open until the commissioner starts the countdown
+  const mainOpen = closesAt == null || now < Date.parse(closesAt)
   const blind = !mainOpen && blindClosesAt != null && now < Date.parse(blindClosesAt)
   // Standings show visible prices, but while the main round is open your full max on each player you lead is locked.
   const lockedAbovePrice = !mainOpen ? 0 : leaders
@@ -292,6 +297,17 @@ function Draft({ userId }: { userId: string }) {
     [load],
   )
 
+  async function runCountdown(action: 'start_countdown' | 'reset_countdown', question: string) {
+    if (!confirm(question)) return
+    const { error } = await supabase.rpc(action)
+    setMessage(
+      error
+        ? { text: error.message, tone: 'error' }
+        : { text: action === 'start_countdown' ? 'Countdown started: 5 minutes left.' : 'Countdown reset. No deadline.', tone: 'ok' },
+    )
+    load()
+  }
+
   async function placeBid({ playerId, amount }: PendingBid) {
     const { data, error } = await supabase.rpc('place_bid', { p_player_id: playerId, p_amount: amount })
     const result = data as BidResult | null
@@ -326,6 +342,24 @@ function Draft({ userId }: { userId: string }) {
         <h1 className="text-xl font-bold">Fantasy 2027 Auction</h1>
         <Rules closesAt={closesAt} blindClosesAt={blindClosesAt} rosterSize={rosterSize} budget={me?.budget} scoring={scoring} />
         <Countdown closesAt={blind ? blindClosesAt : closesAt} label={blind ? 'Blind round closes in' : 'Closes in'} />
+        {isAdmin && closesAt == null && (
+          <button
+            type="button"
+            onClick={() => runCountdown('start_countdown', 'Start the 5-minute countdown? The main round ends when it hits 0.')}
+            className={button}
+          >
+            Start 5-min countdown
+          </button>
+        )}
+        {isAdmin && closesAt != null && mainOpen && (
+          <button
+            type="button"
+            onClick={() => runCountdown('reset_countdown', 'Reset the countdown? The main round stays open with no deadline.')}
+            className={control}
+          >
+            Reset countdown
+          </button>
+        )}
         {me && (
           <>
             <span className={pill} title="Budget minus the max you set on each player you lead"><b>{money(me.remaining - lockedAbovePrice)}</b> left</span>
@@ -521,8 +555,13 @@ function Rules(props: {
           <li>You can raise your max any time. A max is final: you cannot lower, revoke, or delete it.</li>
           <li>Your full max on each player you lead is locked from your balance.</li>
           <li>
-            The auction closes{' '}
-            {props.closesAt ? <b>{new Date(props.closesAt).toLocaleString([], { dateStyle: 'full', timeStyle: 'short' })}</b> : 'at the deadline'}.
+            {props.closesAt ? (
+              <>
+                The auction closes <b>{new Date(props.closesAt).toLocaleString([], { dateStyle: 'full', timeStyle: 'short' })}</b>.
+              </>
+            ) : (
+              'The auction has no deadline yet. The commissioner starts a 5-minute countdown to close it, and the timer shows for everyone.'
+            )}{' '}
             Whoever leads a player at that moment wins that player at that price.
           </li>
         </ul>
@@ -602,7 +641,7 @@ function Countdown({ closesAt, label }: { closesAt: string | null; label: string
     return () => clearInterval(timer)
   }, [])
 
-  if (!closesAt) return <span className={pill}>No auction scheduled</span>
+  if (!closesAt) return <span className={pill}>No deadline yet</span>
   const seconds = Math.floor((Date.parse(closesAt) - now) / 1000)
   if (seconds <= 0) return <span className={`${pill} font-semibold text-red-600`}>Auction closed</span>
   const days = Math.floor(seconds / 86400)
