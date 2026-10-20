@@ -684,6 +684,7 @@ function PlayerPool(props: {
       <table className={table}>
         <thead className={tableHead}>
           <tr>
+            <th className="text-right">#</th>
             <th>Player</th>
             <th>Team</th>
             <th>Pos</th>
@@ -693,12 +694,13 @@ function PlayerPool(props: {
           </tr>
         </thead>
         <tbody>
-          {list.map((player) => {
+          {list.map((player, index) => {
             const leader = props.leaderOf.get(player.id)
             const mine = leader?.manager_id === props.userId
             return (
               <PlayerRow
                 key={player.id}
+                rank={index + 1}
                 player={player}
                 highBid={leader?.amount ?? null}
                 leaderName={leader ? (props.managerName.get(leader.manager_id) ?? null) : null}
@@ -754,6 +756,7 @@ function PlayerPool(props: {
 }
 
 const PlayerRow = memo(function PlayerRow({
+  rank,
   player,
   highBid,
   leaderName,
@@ -764,6 +767,7 @@ const PlayerRow = memo(function PlayerRow({
   onBid,
   onCancelBlind,
 }: {
+  rank: number
   player: Player
   highBid: number | null
   leaderName: string | null
@@ -785,6 +789,7 @@ const PlayerRow = memo(function PlayerRow({
             : stripedRow
       }
     >
+      <td className={`${numeric} text-muted`}>{rank}</td>
       <td className="whitespace-nowrap font-medium">
         <img
           src={`https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/${player.id}.png&w=96&h=70`}
