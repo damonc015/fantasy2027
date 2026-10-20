@@ -790,22 +790,25 @@ const PlayerRow = memo(function PlayerRow({
       }
     >
       <td className={`${numeric} text-muted`}>{rank}</td>
-      <td className="whitespace-nowrap font-medium">
-        <img
-          src={`https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/${player.id}.png&w=96&h=70`}
-          alt=""
-          loading="lazy"
-          width={48}
-          height={35}
-          onError={(event) => (event.currentTarget.style.visibility = 'hidden')}
-          className="mr-2 inline-block"
-        />
-        {player.name}
-        {player.injury_status && player.injury_status !== 'ACTIVE' && (
-          <span className="ml-2 rounded bg-red-500/15 px-1.5 py-0.5 text-xs font-normal text-red-600">
-            {player.injury_status}
-          </span>
-        )}
+      <td className="font-medium">
+        {/* Fixed width keeps long names from widening the table; the full name shows on hover. */}
+        <div className="flex w-60 items-center gap-2 whitespace-nowrap">
+          <img
+            src={`https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/${player.id}.png&w=96&h=70`}
+            alt=""
+            loading="lazy"
+            width={48}
+            height={35}
+            onError={(event) => (event.currentTarget.style.visibility = 'hidden')}
+            className="shrink-0"
+          />
+          <span className="truncate" title={player.name}>{player.name}</span>
+          {player.injury_status && player.injury_status !== 'ACTIVE' && (
+            <span className="shrink-0 rounded bg-red-500/15 px-1.5 py-0.5 text-xs font-normal text-red-600">
+              {player.injury_status}
+            </span>
+          )}
+        </div>
       </td>
       <td className="whitespace-nowrap text-muted">
         <TeamLogo team={player.team} size={24} />
